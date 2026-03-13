@@ -14,7 +14,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
+	networkingv1beta1 "k8s.io/api/networking/v1beta1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +32,7 @@ type Server struct {
 	sharedSecretName  string
 	storageClassName  string
 	workspaceBasePath string
+	ingressClassName  string
 }
 
 type DeployRequest struct {
@@ -62,6 +63,7 @@ func main() {
 		sharedSecretName:  env("SHARED_SECRET_NAME", "copaw-shared-secrets"),
 		storageClassName:  os.Getenv("WORKSPACE_STORAGE_CLASS"),
 		workspaceBasePath: env("WORKSPACE_BASE_PATH", "/app/working"),
+		ingressClassName:  env("INGRESS_CLASS", "nginx"),
 	}
 
 	mux := http.NewServeMux()
@@ -168,7 +170,7 @@ func (s *Server) applyPVC(ctx context.Context, name string, labels map[string]st
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.namespace, Labels: labels},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources: corev1.VolumeResourceRequirements{
+			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{corev1.ResourceStorage: mustParseQuantity(quantity)},
 			},
 		},
@@ -264,39 +266,36 @@ func (s *Server) applyService(ctx context.Context, name string, labels map[strin
 }
 
 func (s *Server) applyIngress(ctx context.Context, name, serviceName, employeeID string, labels map[string]string) error {
-	pathType := networkingv1.PathTypeImplementationSpecific
-	className := "nginx"
-	ing := &networkingv1.Ingress{
+	ing := &networkingv1beta1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: s.namespace,
 			Labels:    labels,
 			Annotations: map[string]string{
+				"kubernetes.io/ingress.class":                s.ingressClassName,
 				"nginx.ingress.kubernetes.io/use-regex":      "true",
 				"nginx.ingress.kubernetes.io/rewrite-target": "/$2",
 			},
 		},
-		Spec: networkingv1.IngressSpec{
-			IngressClassName: &className,
-			Rules: []networkingv1.IngressRule{{
+		Spec: networkingv1beta1.IngressSpec{
+			Rules: []networkingv1beta1.IngressRule{{
 				Host: s.host,
-				IngressRuleValue: networkingv1.IngressRuleValue{
-					HTTP: &networkingv1.HTTPIngressRuleValue{Paths: []networkingv1.HTTPIngressPath{{
-						Path:     fmt.Sprintf("/copaw/%s(/|$)(.*)", employeeID),
-						PathType: &pathType,
-						Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
-							Name: serviceName,
-							Port: networkingv1.ServiceBackendPort{Number: 8088},
-						}},
+				IngressRuleValue: networkingv1beta1.IngressRuleValue{
+					HTTP: &networkingv1beta1.HTTPIngressRuleValue{Paths: []networkingv1beta1.HTTPIngressPath{{
+						Path: fmt.Sprintf("/copaw/%s(/|$)(.*)", employeeID),
+						Backend: networkingv1beta1.IngressBackend{
+							ServiceName: serviceName,
+							ServicePort: intstr.FromInt(8088),
+						},
 					}}},
 				},
 			}},
 		},
 	}
 
-	existing, err := s.clientset.NetworkingV1().Ingresses(s.namespace).Get(ctx, name, metav1.GetOptions{})
+	existing, err := s.clientset.NetworkingV1beta1().Ingresses(s.namespace).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = s.clientset.NetworkingV1().Ingresses(s.namespace).Create(ctx, ing, metav1.CreateOptions{})
+		_, err = s.clientset.NetworkingV1beta1().Ingresses(s.namespace).Create(ctx, ing, metav1.CreateOptions{})
 		return err
 	}
 	if err != nil {
@@ -306,7 +305,7 @@ func (s *Server) applyIngress(ctx context.Context, name, serviceName, employeeID
 	existing.Labels = merge(existing.Labels, labels)
 	existing.Annotations = merge(existing.Annotations, ing.Annotations)
 	existing.Spec = ing.Spec
-	_, err = s.clientset.NetworkingV1().Ingresses(s.namespace).Update(ctx, existing, metav1.UpdateOptions{})
+	_, err = s.clientset.NetworkingV1beta1().Ingresses(s.namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	return err
 }
 

@@ -8,6 +8,13 @@
 - 每个工号独立 PVC（挂载到 `/app/working`）
 - 共享 Secret（挂载到 `/app/working.secret`）
 
+
+## Kubernetes 版本说明
+
+- 本实现基于 **Kubernetes 1.18** 兼容 API：
+  - Ingress 使用 `networking.k8s.io/v1beta1`（代码中为 `k8s.io/api/networking/v1beta1`）
+  - Ingress class 通过注解 `kubernetes.io/ingress.class` 指定
+
 ## API
 
 `POST /api/v1/copaw/deploy`
@@ -43,6 +50,7 @@
 - `WORKSPACE_STORAGE_CLASS`：PVC 使用的 StorageClass（可选）
 - `WORKSPACE_BASE_PATH`：工作目录挂载点，默认 `/app/working`
 - `LISTEN_ADDR`：服务监听地址，默认 `:8080`
+- `INGRESS_CLASS`：Ingress class，默认 `nginx`（K8s 1.18 通过 annotation 下发）
 
 ## Ingress 路由规则
 
