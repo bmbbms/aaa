@@ -104,7 +104,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	resources, err := s.ensureCopawResources(ctx, strings.TrimSpace(req.Username), safeID)
+	resources, err := s.ensureCopawResources(ctx, sanitizeToLabelValue(req.Username), safeID)
 	if err != nil {
 		log.Printf("deploy failed for employee %s: %v", safeID, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -197,7 +197,10 @@ func (s *Server) applyDeployment(ctx context.Context, name, pvcName string, labe
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				"app":         "copaw",
+				"employee-id": labels["employee-id"],
+			}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
@@ -207,7 +210,7 @@ func (s *Server) applyDeployment(ctx context.Context, name, pvcName string, labe
 						Ports: []corev1.ContainerPort{{ContainerPort: 8088}},
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "workspace", MountPath: s.workspaceBasePath},
-							{Name: "shared-secret", MountPath: "/app/working.secret", ReadOnly: true},
+							{Name: "shared-secret", MountPath: s.workspaceBasePath + ".secret", ReadOnly: true},
 						},
 					}},
 					Volumes: []corev1.Volume{
@@ -238,7 +241,10 @@ func (s *Server) applyService(ctx context.Context, name string, labels map[strin
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.namespace, Labels: labels},
 		Spec: corev1.ServiceSpec{
-			Selector: labels,
+			Selector: map[string]string{
+				"app":         "copaw",
+				"employee-id": labels["employee-id"],
+			},
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
 				Port:       8088,
@@ -351,9 +357,51 @@ func merge(base, add map[string]string) map[string]string {
 	return base
 }
 
+// sanitizeToLabelValue normalizes an arbitrary string into a valid Kubernetes label value.
+// It replaces invalid characters with '-', trims to 63 characters, and ensures it starts
+// and ends with an alphanumeric character.
+func sanitizeToLabelValue(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	var b []rune
+	for _, r := range v {
+		if (r >= 'A' && r <= 'Z') ||
+			(r >= 'a' && r <= 'z') ||
+			(r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.' {
+			b = append(b, r)
+		} else {
+			b = append(b, '-')
+		}
+	}
+	s := string(b)
+	if len(s) > 63 {
+		s = s[:63]
+	}
+	isAlnum := func(r rune) bool {
+		return (r >= 'A' && r <= 'Z') ||
+			(r >= 'a' && r <= 'z') ||
+			(r >= '0' && r <= '9')
+	}
+	// trim leading non-alnum
+	for len(s) > 0 && !isAlnum(rune(s[0])) {
+		s = s[1:]
+	}
+	// trim trailing non-alnum
+	for len(s) > 0 && !isAlnum(rune(s[len(s)-1])) {
+		s = s[:len(s)-1]
+	}
+	if s == "" {
+		return "user"
+	}
+	return s
+}
+
 func env(k, fallback string) string {
 	if v := os.Getenv(k); strings.TrimSpace(v) != "" {
-		return v
+		return strings.TrimSpace(v)
 	}
 	return fallback
 }
